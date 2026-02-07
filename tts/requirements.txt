@@ -1,0 +1,6 @@
+TTS==0.13.1
+runpod
+soundfile
+transformers==4.36.2
+torch==2.1.2
+torchaudio==2.1.2
