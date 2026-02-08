@@ -1,49 +1,118 @@
 import os
+import asyncio
+import time
 import torch
 from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-app = FastAPI()
-
+# ================= CONFIG =================
 MODEL_NAME = "glonor/byt5-arabic-diacritization"
+
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 8))          # micro-batch size
+BATCH_WAIT_MS = int(os.getenv("BATCH_WAIT_MS", 8))    # wait time to collect batch
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", 256))
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-print("Loading model...")
+# ================= APP =================
+app = FastAPI()
+
+print("🚀 Loading ByT5 model...")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).to(device)
 model.eval()
 
-print("Model loaded successfully.")
+# Enable faster inference
+torch.backends.cudnn.benchmark = True
+
+print("✅ Model loaded on", device)
+
+# ================= REQUEST QUEUE =================
+request_queue = asyncio.Queue()
 
 class DiacritizeRequest(BaseModel):
     text: str
 
 class DiacritizeResponse(BaseModel):
     text: str
+    latency_ms: float
 
-# ✅ Required health check for RunPod
+# ================= HEALTH CHECK =================
 @app.get("/ping")
 async def ping():
-    return {"status": "healthy"}
+    return {"status": "healthy", "device": device}
 
+# ================= WORKER LOOP =================
+async def batch_worker():
+    while True:
+        batch = []
+        futures = []
+
+        start_time = time.time()
+
+        # Collect first request
+        req, fut = await request_queue.get()
+        batch.append(req)
+        futures.append(fut)
+
+        # Collect more requests within time window
+        while len(batch) < BATCH_SIZE:
+            try:
+                timeout = BATCH_WAIT_MS / 1000 - (time.time() - start_time)
+                if timeout <= 0:
+                    break
+                req, fut = await asyncio.wait_for(request_queue.get(), timeout)
+                batch.append(req)
+                futures.append(fut)
+            except asyncio.TimeoutError:
+                break
+
+        texts = [r.text for r in batch]
+
+        # Tokenization (CPU)
+        inputs = tokenizer(
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=MAX_LENGTH,
+        ).to(device)
+
+        # GPU inference
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_length=MAX_LENGTH,
+                num_beams=2,   # beams reduced for speed
+            )
+
+        results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+        # Return results
+        for fut, text in zip(futures, results):
+            fut.set_result(text)
+
+# Start background batch worker
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(batch_worker())
+
+# ================= API ENDPOINT =================
 @app.post("/diacritize", response_model=DiacritizeResponse)
 async def diacritize(req: DiacritizeRequest):
-    inputs = tokenizer(req.text, return_tensors="pt").to(device)
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_length=256,
-            num_beams=4
-        )
+    start = time.time()
+    await request_queue.put((req, fut))
+    result = await fut
+    latency = (time.time() - start) * 1000
 
-    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return {"text": result}
+    return {"text": result, "latency_ms": round(latency, 2)}
 
-
+# ================= MAIN =================
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 80))
