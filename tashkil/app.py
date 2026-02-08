@@ -11,7 +11,7 @@ MODEL_NAME = "glonor/byt5-arabic-diacritization"
 
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 8))          # micro-batch size
 BATCH_WAIT_MS = int(os.getenv("BATCH_WAIT_MS", 8))    # wait time to collect batch
-MAX_LENGTH = int(os.getenv("MAX_LENGTH", 256))
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", 1024))
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -85,7 +85,10 @@ async def batch_worker():
             outputs = model.generate(
                 **inputs,
                 max_length=MAX_LENGTH,
-                num_beams=2,   # beams reduced for speed
+                num_beams=4,
+                 length_penalty=0.6,
+                early_stopping=False, 
+                no_repeat_ngram_size=3,
             )
 
         results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
