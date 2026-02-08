@@ -10,8 +10,8 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 MODEL_NAME = "glonor/byt5-arabic-diacritization"
 
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 8))          # micro-batch size
-BATCH_WAIT_MS = int(os.getenv("BATCH_WAIT_MS", 8))    # wait time to collect batch
-MAX_LENGTH = int(os.getenv("MAX_LENGTH", 1024))
+BATCH_WAIT_MS = int(os.getenv("BATCH_WAIT_MS", 8))    # wait time to collect batch (ms)
+MAX_LENGTH = int(os.getenv("MAX_LENGTH", 1024))       # max token length
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -21,10 +21,10 @@ app = FastAPI()
 print("🚀 Loading ByT5 model...")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).to(device)
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME).to(device).half()  # FP16
 model.eval()
 
-# Enable faster inference
+# Enable faster cuDNN kernels
 torch.backends.cudnn.benchmark = True
 
 print("✅ Model loaded on", device)
@@ -44,7 +44,7 @@ class DiacritizeResponse(BaseModel):
 async def ping():
     return {"status": "healthy", "device": device}
 
-# ================= WORKER LOOP =================
+# ================= BATCH WORKER =================
 async def batch_worker():
     while True:
         batch = []
@@ -57,7 +57,7 @@ async def batch_worker():
         batch.append(req)
         futures.append(fut)
 
-        # Collect more requests within time window
+        # Collect additional requests within wait window
         while len(batch) < BATCH_SIZE:
             try:
                 timeout = BATCH_WAIT_MS / 1000 - (time.time() - start_time)
@@ -71,7 +71,7 @@ async def batch_worker():
 
         texts = [r.text for r in batch]
 
-        # Tokenization (CPU)
+        # Tokenization
         inputs = tokenizer(
             texts,
             return_tensors="pt",
@@ -80,20 +80,18 @@ async def batch_worker():
             max_length=MAX_LENGTH,
         ).to(device)
 
-        # GPU inference
-        with torch.no_grad():
+        # GPU inference with FP16 & greedy decoding
+        with torch.inference_mode(), torch.cuda.amp.autocast():
             outputs = model.generate(
                 **inputs,
                 max_length=MAX_LENGTH,
-                num_beams=4,
-                 length_penalty=0.6,
-                early_stopping=False, 
-                no_repeat_ngram_size=3,
+                num_beams=1,       # greedy decoding
+                do_sample=False
             )
 
         results = tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
-        # Return results
+        # Return results to request futures
         for fut, text in zip(futures, results):
             fut.set_result(text)
 
@@ -111,7 +109,7 @@ async def diacritize(req: DiacritizeRequest):
     start = time.time()
     await request_queue.put((req, fut))
     result = await fut
-    latency = (time.time() - start) * 1000
+    latency = (time.time() - start) * 1000  # ms
 
     return {"text": result, "latency_ms": round(latency, 2)}
 
