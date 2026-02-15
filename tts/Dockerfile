@@ -2,8 +2,8 @@ FROM python:3.10-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
 
-# System deps (XTTS needs these)
 RUN apt-get update && apt-get install -y \
     git \
     ffmpeg \
@@ -13,11 +13,19 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Python deps first (better caching)
+RUN pip install camel-tools
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
-COPY rp_handler.py .
+ENV CAMELTOOLS_DATA=/opt/camel_tools
+RUN mkdir -p /opt/camel_tools
 
-CMD ["python", "rp_handler.py"]
+
+COPY build/download_camel.py /app/build/download_camel.py
+
+RUN python /app/build/download_camel.py
+
+COPY . .
+
+CMD ["python", "app.py"]

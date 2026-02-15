@@ -1,4 +1,7 @@
-TTS==0.13.1
+fastapi==0.110.0
+uvicorn==0.29.0
+pydantic==2.6.4
+TTS==0.22.0
 runpod
 soundfile
 transformers==4.36.2
