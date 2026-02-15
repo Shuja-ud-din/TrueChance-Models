@@ -25,10 +25,10 @@ class STTRequest(BaseModel):
     image=image,
     gpu="L40S",
     min_containers=0,
-    max_containers=1,
-    scaledown_window=30,
+    max_containers=3,
+    scaledown_window=120,
 )
-@modal.concurrent(max_inputs=3)
+@modal.concurrent(max_inputs=5)
 class WhisperModel:
 
     @modal.enter()
@@ -41,24 +41,43 @@ class WhisperModel:
             compute_type="float16",
         )
 
-    @modal.fastapi_endpoint(method="POST", docs=True, requires_proxy_auth=True)
-    async def transcribe(self, req: STTRequest):    
+    @modal.asgi_app()
+    def web(self):
+        from fastapi import FastAPI, HTTPException
         import base64
         import numpy as np
 
-        language = req.language if req.language else "en"
+        web_app = FastAPI()
 
-        audio_bytes = base64.b64decode(req.audio_base64)
-        audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        @web_app.get("/ping")
+        async def ping():
+            return {"status": "ok", "message": "Whisper API is alive!"}
 
-        segments, _ = self.model.transcribe(
-            audio,
-            beam_size=2,
-            language=language,
-            condition_on_previous_text=False,
-            vad_filter=False,
-        )
+        @web_app.post("/transcribe")
+        async def transcribe(req: STTRequest):
+            try:
+                language = req.language or "en"
 
-        text = "".join(seg.text for seg in segments)
+                audio_bytes = base64.b64decode(req.audio_base64)
+                audio = (
+                    np.frombuffer(audio_bytes, dtype=np.int16)
+                    .astype(np.float32)
+                    / 32768.0
+                )
 
-        return {"text": text, "language": language}
+                segments, _ = self.model.transcribe(
+                    audio,
+                    beam_size=2,
+                    language=language,
+                    condition_on_previous_text=False,
+                    vad_filter=False,
+                )
+
+                text = "".join(seg.text for seg in segments)
+
+                return {"text": text, "language": language}
+
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        return web_app
