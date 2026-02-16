@@ -60,11 +60,10 @@ with image.imports():
     min_containers=0,
     max_containers=3,
     scaledown_window=300,
-    container_idle_timeout=300,
     volumes={"/model": volume},
 )
 @modal.concurrent(max_inputs=10)
-class Chatterbox:
+class CoaquiTTS:
     @modal.enter()
     def load(self):
         print("Loading XTTS v2...")

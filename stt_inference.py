@@ -27,7 +27,6 @@ class STTRequest(BaseModel):
     min_containers=0,
     max_containers=3,
     scaledown_window=300,
-    container_idle_timeout=300,
 )
 @modal.concurrent(max_inputs=10)
 class WhisperModel:
