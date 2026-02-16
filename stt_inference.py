@@ -28,7 +28,7 @@ class STTRequest(BaseModel):
     max_containers=3,
     scaledown_window=120,
 )
-@modal.concurrent(max_inputs=5)
+@modal.concurrent(max_inputs=10)
 class WhisperModel:
 
     @modal.enter()
