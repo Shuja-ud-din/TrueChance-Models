@@ -59,7 +59,8 @@ with image.imports():
     gpu="A100-80GB",
     min_containers=0,
     max_containers=3,
-    scaledown_window=30,
+    scaledown_window=300,
+    container_idle_timeout=300,
     volumes={"/model": volume},
 )
 @modal.concurrent(max_inputs=10)
@@ -147,7 +148,7 @@ class Chatterbox:
             raise
 
 
-    @modal.asgi_app()
+    @modal.asgi_app(requires_proxy_auth=True)
     def web(self):
         from fastapi import FastAPI, HTTPException
 

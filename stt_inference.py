@@ -26,7 +26,8 @@ class STTRequest(BaseModel):
     gpu="L40S",
     min_containers=0,
     max_containers=3,
-    scaledown_window=120,
+    scaledown_window=300,
+    container_idle_timeout=300,
 )
 @modal.concurrent(max_inputs=10)
 class WhisperModel:
@@ -41,11 +42,12 @@ class WhisperModel:
             compute_type="float16",
         )
 
-    @modal.asgi_app()
+    @modal.asgi_app(requires_proxy_auth=True)
     def web(self):
         from fastapi import FastAPI, HTTPException
         import base64
         import numpy as np
+        import time
 
         web_app = FastAPI()
 
@@ -57,6 +59,8 @@ class WhisperModel:
         async def transcribe(req: STTRequest):
             try:
                 language = req.language or "en"
+
+                start = time.time()
 
                 audio_bytes = base64.b64decode(req.audio_base64)
                 audio = (
@@ -75,7 +79,9 @@ class WhisperModel:
 
                 text = "".join(seg.text for seg in segments)
 
-                return {"text": text, "language": language}
+                latency = (time.time() - start) * 1000
+
+                return {"text": text, "language": language, "latency_ms": round(latency, 2)}
 
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))
