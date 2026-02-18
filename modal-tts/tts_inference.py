@@ -38,16 +38,14 @@ DEFAULT_SPEAKERS = {
     "ar": "Badr Odhiambo"
 }
 
-gpu_semaphore = asyncio.Semaphore(8)
-tashkeel_semaphore = asyncio.Semaphore(2)
-
 with image.imports():
     import time
-    import io
     import base64
     import tempfile
 
-    import soundfile as sf
+    import os
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
     from TTS.api import TTS
     from camel_tools.disambig.bert import BERTUnfactoredDisambiguator
     from camel_tools.tagger.default import DefaultTagger
@@ -62,7 +60,7 @@ with image.imports():
     scaledown_window=300,
     volumes={"/model": volume},
 )
-@modal.concurrent(max_inputs=10)
+@modal.concurrent(max_inputs=5)
 class CoaquiTTS:
     @modal.enter()
     def load(self):
@@ -71,7 +69,8 @@ class CoaquiTTS:
         self.tts_model = TTS(
             model_path="/model/xtts_v2",
             config_path="/model/xtts_v2/config.json",
-            progress_bar=False
+            progress_bar=False,
+            gpu=True
         ).to("cuda")
 
         print("Loading Tashkeel model...")
@@ -92,17 +91,16 @@ class CoaquiTTS:
         return output
 
     async def diacritize(self, text: str):
-        async with tashkeel_semaphore:
-            tokens = simple_word_tokenize(text)
+        tokens = simple_word_tokenize(text)
 
-            start = time.time()
-            diacritized_tokens = await asyncio.to_thread(
-                self.tagger.tag,
-                tokens,
-            )
+        start = time.time()
+        diacritized_tokens = await asyncio.to_thread(
+            self.tagger.tag,
+            tokens,
+        )
 
-            result = " ".join(diacritized_tokens)
-            latency = (time.time() - start) * 1000
+        result = " ".join(diacritized_tokens)
+        latency = (time.time() - start) * 1000
 
         return result, latency
 
@@ -110,27 +108,24 @@ class CoaquiTTS:
     async def text_to_speech(self, text: str, language: str):
         try:
             speaker = DEFAULT_SPEAKERS.get(language)
-
             start_time = time.time()
 
-            async with gpu_semaphore:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                out_path = f.name
 
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                    out_path = f.name
+            # Run blocking TTS in thread pool
+            await asyncio.to_thread(
+                self.tts_model.tts_to_file,
+                file_path=out_path,
+                text=text,
+                speaker=speaker,
+                language=language,
+            )
 
-                # Run blocking TTS in thread pool
-                await asyncio.to_thread(
-                    self.tts_model.tts_to_file,
-                    file_path=out_path,
-                    text=text,
-                    speaker=speaker,
-                    language=language,
-                )
+            with open(out_path, "rb") as f:
+                audio_bytes = f.read()
 
-                with open(out_path, "rb") as f:
-                    audio_bytes = f.read()
-
-                audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+            audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
             latency_ms = (time.time() - start_time) * 1000
 
